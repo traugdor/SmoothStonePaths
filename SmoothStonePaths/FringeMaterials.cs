@@ -79,8 +79,8 @@ internal static class FringeMaterials
     }
 
     // Path blocks never fringe each other, including ones this mod does not patch (slabs, stairs, full blocks):
-    // vanilla stone paths and Add Some Paths' gravel and packed dirt paths.
-    private static readonly string[] PathCodePrefixes = { "stonepath", "gravelpath", "packedpath" };
+    // vanilla stone paths, Add Some Paths' gravel and packed dirt paths and More Roads and Paths' roads.
+    private static readonly string[] PathCodePrefixes = { "stonepath", "gravelpath", "packedpath", "ancientroad", "clayroad", "stoneroad" };
 
     private static bool IsPath(string codePath)
     {

@@ -141,6 +141,11 @@ function Write-Patch {
         @{ File = 'game:blocktypes/stone/generic/stonepath.json'; Class = 'BlockBlendedPath' },
         @{ File = 'addsomepaths:blocktypes/gravelpath.json'; Class = 'BlockBlendedPath'; ModId = 'addsomepaths' },
         @{ File = 'addsomepaths:blocktypes/packedpath.json'; Class = 'BlockBlendedPath'; ModId = 'addsomepaths' },
+        # More Roads and Paths: its full-height stone paths, stone roads and clay roads share the vanilla path shape. Its
+        # slabs and stairs are left alone, and so are the temporal roads, which glow and carry their own overlay.
+        @{ File = 'moreroads:blocktypes/paths/stonepath.json'; Class = 'BlockBlendedPath'; ModId = 'moreroads' },
+        @{ File = 'moreroads:blocktypes/roads/stone/ancientroad.json'; Class = 'BlockBlendedPath'; ModId = 'moreroads' },
+        @{ File = 'moreroads:blocktypes/roads/clay/clayroad.json'; Class = 'BlockBlendedPath'; ModId = 'moreroads' },
         @{ File = 'game:blocktypes/stone/sand.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey },
         @{ File = 'game:blocktypes/stone/gravel.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey },
         # Bare soil is drawn as a cube, which no block hook can reach, so it is switched to a shape drawn the same way.
