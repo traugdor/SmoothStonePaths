@@ -28,7 +28,8 @@ internal sealed class FringeTextureSource : ITexPositionSource
 /// <summary>
 /// Turns a block's fringe pieces into one texture that replaces the block's top face (everything but grass) and, if any
 /// grass shows, one tinted overlay quad. Textures are built on the CPU and added to the block atlas the first time a
-/// combination is seen. Anything unexpected makes it give up, and the block falls back to drawing each piece as a quad.
+/// combination is seen, at the size of the block's own top texture. Anything unexpected makes it give up, and the block
+/// shows no fringe.
 /// </summary>
 internal sealed class FringeBaker
 {
@@ -39,7 +40,7 @@ internal sealed class FringeBaker
     private readonly Block block;
     private readonly FringeAssetSources sources;
     private List<(int subId, AssetLocation name)> topTextures;
-    private readonly Dictionary<int, int[]> baseTextures = new Dictionary<int, int[]>();
+    private readonly Dictionary<int, (int[] Pixels, int Size)> baseTextures = new Dictionary<int, (int[], int)>();
 
     public FringeBaker(ICoreClientAPI capi, Block block, FringeAssetSources sources)
     {
@@ -59,7 +60,8 @@ internal sealed class FringeBaker
 
         int face = -1, baseSubId = 0;
         TopFace.Mapping mapping = default;
-        int[] baseTop = new int[FringeCompositor.Size * FringeCompositor.Size];
+        int size;
+        int[] baseTop;
         if (hasNonGrass)
         {
             face = TopFace.Find(baseMesh.xyz, baseMesh.Flags, baseMesh.VerticesCount, baseMesh.VerticesPerFace);
@@ -75,24 +77,34 @@ internal sealed class FringeBaker
                 failure = "could not read how the top texture is laid over the face";
                 return null;
             }
-            baseTop = TopFace.Orient(LoadBase(baseSubId, baseName), mapping);
+            (int[] pixels, int baseSize) = LoadBase(baseSubId, baseName);
+            size = baseSize;
+            baseTop = TopFace.Orient(pixels, size, mapping);
+        }
+        else
+        {
+            // Only grass: there is no top texture to match, so the grass is drawn at its own size.
+            int grassSize = sources.NativeSize(FringeMaterials.Grass);
+            size = IsBakeableSize(grassSize, grassSize) ? grassSize : FringeCompositor.Size;
+            baseTop = new int[size * size];
         }
 
-        FringeImage image = FringeCompositor.Compose(pieces, baseTop, sources);
+        FringeImage image = FringeCompositor.Compose(pieces, baseTop, size, sources);
 
         MeshData result = baseMesh;
         if (hasNonGrass && !image.Baked.AsSpan().SequenceEqual(baseTop))
         {
             string path = "bake/" + baseSubId + "_" + Signature(mapping) + "/" + Describe(pieces.Where(p => p.Material != FringeMaterials.Grass));
-            if (!Insert(path, image.Baked, FringeCompositor.Size, out TextureAtlasPosition baked)) { failure = "could not add the baked top texture to the atlas"; return null; }
+            if (!Insert(path, image.Baked, size, out TextureAtlasPosition baked)) { failure = "could not add the baked top texture to the atlas"; return null; }
             result = baseMesh.Clone();
             SetTopTexture(result, face, baked);
         }
 
         if (image.Grass != null)
         {
-            int[] overlayImage = FringeCompositor.WithMirroredMargin(image.Grass, OverlayQuad.MarginTexels);
-            if (!Insert("overlay/" + Describe(pieces), overlayImage, FringeCompositor.Size + 2 * OverlayQuad.MarginTexels, out TextureAtlasPosition overlay)) { failure = "could not add the grass overlay texture to the atlas"; return null; }
+            int margin = OverlayQuad.MarginTexels(size);
+            int[] overlayImage = FringeCompositor.WithMirroredMargin(image.Grass, size, margin);
+            if (!Insert("overlay/" + size + "/" + Describe(pieces), overlayImage, size + 2 * margin, out TextureAtlasPosition overlay)) { failure = "could not add the grass overlay texture to the atlas"; return null; }
             MeshData overlayMesh = OverlayMesh(overlay, surfaceLift, OverlayQuad.SidesToExtend(pieces));
             if (overlayMesh == null) { failure = "the grass overlay shape is missing"; return null; }
             if (ReferenceEquals(result, baseMesh)) result = baseMesh.Clone();
@@ -156,20 +168,27 @@ internal sealed class FringeBaker
         if (baked.BakedTiles != null) foreach (BakedCompositeTexture tile in baked.BakedTiles) Flatten(tile, into, seen);
     }
 
-    private int[] LoadBase(int subId, AssetLocation name)
+    /// <summary>
+    /// Whether a top texture of this size can be baked: square, so it maps onto the block top, and a multiple of 16, so
+    /// one block pixel is a whole number of texels and the grass overlay's one-pixel margin lines up.
+    /// </summary>
+    internal static bool IsBakeableSize(int width, int height) => width == height && width >= 16 && width % 16 == 0;
+
+    private (int[] Pixels, int Size) LoadBase(int subId, AssetLocation name)
     {
-        if (baseTextures.TryGetValue(subId, out int[] cached)) return cached;
+        if (baseTextures.TryGetValue(subId, out (int[], int) cached)) return cached;
 
         IBitmap bitmap = capi.BlockTextureAtlas.LoadCompositeBitmap(new AssetLocationAndSource(name));
         try
         {
-            if (bitmap == null || bitmap.Width != FringeCompositor.Size || bitmap.Height != FringeCompositor.Size)
+            if (bitmap == null) throw new InvalidOperationException("base texture " + name + " could not be loaded");
+            if (!IsBakeableSize(bitmap.Width, bitmap.Height))
             {
-                throw new InvalidOperationException("base texture " + name + " is not 32x32");
+                throw new InvalidOperationException("base texture " + name + " is " + bitmap.Width + "x" + bitmap.Height + ", not a square multiple of 16");
             }
-            int[] pixels = bitmap.Pixels;
-            baseTextures[subId] = pixels;
-            return pixels;
+            var loaded = (bitmap.Pixels, bitmap.Width);
+            baseTextures[subId] = loaded;
+            return loaded;
         }
         finally
         {

@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/tests/">
+    <Project Path="tests/SmoothStonePaths.Tests/SmoothStonePaths.Tests.csproj" />
+  </Folder>
   <Project Path="SmoothStonePaths/SmoothStonePaths.csproj" />
   <Project Path="ZZCakeBuild/CakeBuild.csproj" />
 </Solution>

@@ -42,8 +42,11 @@ internal interface IFringeSources
     /// <summary>32x32 ARGB mask texels, row-major. Alpha 0 keeps the material texel, anything else cuts it.</summary>
     int[] Mask(bool concave);
 
-    /// <summary>32x32 ARGB texels of the vanilla texture for a fringe material id.</summary>
-    int[] Material(int material);
+    /// <summary>The texture for a fringe material id, resampled to size x size ARGB texels.</summary>
+    int[] Material(int material, int size);
+
+    /// <summary>The width of a fringe material's own texture, which a texture pack may make larger or smaller than 32.</summary>
+    int NativeSize(int material);
 
     PieceGeometry Geometry(Piece piece);
 }
@@ -51,11 +54,11 @@ internal interface IFringeSources
 /// <summary>The block top split into what is baked into its own texture and what must stay a tinted overlay.</summary>
 internal sealed class FringeImage
 {
-    /// <summary>The block's top with every non-grass fringe painted in. 32x32 ARGB in block space, x east and z south.</summary>
+    /// <summary>The block's top with every non-grass fringe painted in. Size x size ARGB in block space, x east and z south.</summary>
     public int[] Baked;
 
     /// <summary>
-    /// The grass that ends up visible, 32x32 ARGB in block space; 0 where no grass shows. Null when none does.
+    /// The grass that ends up visible, size x size ARGB in block space; 0 where no grass shows. Null when none does.
     /// Grass is tinted live by season, frost and climate, so it cannot be baked and is drawn as a tinted overlay.
     /// </summary>
     public int[] Grass;
@@ -65,41 +68,52 @@ internal sealed class FringeImage
 /// Resolves a block's fringe pieces into texels. Pieces are painted from the bottom layer up, exactly as the stacked
 /// quads would draw, so the result looks the same without any piece sitting above the surface.
 /// </summary>
+/// <remarks>
+/// Masks and piece layout are authored on a 32x32 grid. The image is built at the size of the block's own top texture,
+/// which a texture pack may change, by looking up each texel's place on that grid, so a larger texture keeps its detail
+/// and the fringe keeps its shape.
+/// </remarks>
 internal static class FringeCompositor
 {
+    /// <summary>Size of the grid the masks and piece shapes are authored on.</summary>
     public const int Size = 32;
 
-    public static FringeImage Compose(IReadOnlyList<Piece> pieces, int[] baseTop, IFringeSources sources)
+    public static FringeImage Compose(IReadOnlyList<Piece> pieces, int[] baseTop, int size, IFringeSources sources)
     {
-        int[] nonGrass = new int[Size * Size];
-        int[] grass = new int[Size * Size];
-        bool[] grassOnTop = new bool[Size * Size];
+        int[] nonGrass = new int[size * size];
+        int[] grass = new int[size * size];
+        bool[] grassOnTop = new bool[size * size];
 
         foreach (Piece piece in pieces.OrderBy(FringePlan.Layer))
         {
             PieceGeometry geometry = sources.Geometry(piece);
             int[] mask = sources.Mask(piece.Kind == PieceKind.EdgeConcave);
-            int[] material = sources.Material(piece.Material);
+            int[] material = sources.Material(piece.Material, size);
             bool isGrass = piece.Material == FringeMaterials.Grass;
 
-            for (int az = geometry.Z0; az < geometry.Z1; az++)
+            // The piece's texels at this size: every texel whose place on the authored grid lies inside the piece.
+            for (int az = Scaled(geometry.Z0, size); az < Scaled(geometry.Z1, size); az++)
             {
-                for (int ax = geometry.X0; ax < geometry.X1; ax++)
+                int gz = az * Size / size;
+                for (int ax = Scaled(geometry.X0, size); ax < Scaled(geometry.X1, size); ax++)
                 {
-                    int texel = (geometry.V0 + az - geometry.Z0) * Size + (geometry.U0 + ax - geometry.X0);
-                    if (((mask[texel] >> 24) & 0xFF) != 0) continue;
-                    int color = material[texel];
+                    int gx = ax * Size / size;
+                    if (((mask[(geometry.V0 + gz - geometry.Z0) * Size + geometry.U0 + gx - geometry.X0] >> 24) & 0xFF) != 0) continue;
+
+                    int u = System.Math.Clamp(ax + (geometry.U0 - geometry.X0) * size / Size, 0, size - 1);
+                    int v = System.Math.Clamp(az + (geometry.V0 - geometry.Z0) * size / Size, 0, size - 1);
+                    int color = material[v * size + u];
                     if (((color >> 24) & 0xFF) == 0) continue;
 
-                    ToWorld(piece.Index, ax, az, out int wx, out int wz);
-                    int at = wz * Size + wx;
+                    ToWorld(piece.Index, ax, az, size, out int wx, out int wz);
+                    int at = wz * size + wx;
                     if (isGrass) grass[at] = color; else nonGrass[at] = color;
                     grassOnTop[at] = isGrass;
                 }
             }
         }
 
-        var image = new FringeImage { Baked = new int[Size * Size] };
+        var image = new FringeImage { Baked = new int[size * size] };
         bool anyGrass = false;
         for (int i = 0; i < image.Baked.Length; i++)
         {
@@ -109,7 +123,7 @@ internal static class FringeCompositor
 
         if (anyGrass)
         {
-            image.Grass = new int[Size * Size];
+            image.Grass = new int[size * size];
             for (int i = 0; i < image.Grass.Length; i++)
             {
                 if (grassOnTop[i]) image.Grass[i] = grass[i];
@@ -118,15 +132,18 @@ internal static class FringeCompositor
         return image;
     }
 
+    // The first texel at this size whose place on the authored grid is at or past the authored coordinate.
+    private static int Scaled(int authored, int size) => (authored * size + Size - 1) / Size;
+
     /// <summary>Maps a texel authored for the north side onto the side or corner <c>index</c> (see FringePlan.RotationY).</summary>
-    internal static void ToWorld(int index, int ax, int az, out int wx, out int wz)
+    internal static void ToWorld(int index, int ax, int az, int size, out int wx, out int wz)
     {
         switch (index)
         {
             case 0: wx = ax; wz = az; break;
-            case 1: wx = Size - 1 - az; wz = ax; break;
-            case 2: wx = Size - 1 - ax; wz = Size - 1 - az; break;
-            default: wx = az; wz = Size - 1 - ax; break;
+            case 1: wx = size - 1 - az; wz = ax; break;
+            case 2: wx = size - 1 - ax; wz = size - 1 - az; break;
+            default: wx = az; wz = size - 1 - ax; break;
         }
     }
 
@@ -151,24 +168,24 @@ internal static class FringeCompositor
     }
 
     /// <summary>
-    /// Copies a 32x32 image into the middle of a larger one and continues it outwards by mirroring, <c>margin</c> texels
+    /// Copies a square image into the middle of a larger one and continues it outwards by mirroring, <c>margin</c> texels
     /// deep. Unlike repeating the edge texels this reads as texture, not as streaks.
     /// </summary>
-    internal static int[] WithMirroredMargin(int[] image, int margin)
+    internal static int[] WithMirroredMargin(int[] image, int size, int margin)
     {
-        int padded = Size + 2 * margin;
+        int padded = size + 2 * margin;
         int[] result = new int[padded * padded];
         for (int y = 0; y < padded; y++)
         {
-            int sy = Mirror(y - margin);
+            int sy = Mirror(y - margin, size);
             for (int x = 0; x < padded; x++)
             {
-                result[y * padded + x] = image[sy * Size + Mirror(x - margin)];
+                result[y * padded + x] = image[sy * size + Mirror(x - margin, size)];
             }
         }
         return result;
     }
 
-    // -1 -> 0 and -2 -> 1 on the low side; 32 -> 31 and 33 -> 30 on the high side.
-    private static int Mirror(int i) => i < 0 ? -i - 1 : (i >= Size ? 2 * Size - 1 - i : i);
+    // -1 -> 0 and -2 -> 1 on the low side; size -> size - 1 and size + 1 -> size - 2 on the high side.
+    private static int Mirror(int i, int size) => i < 0 ? -i - 1 : (i >= size ? 2 * size - 1 - i : i);
 }

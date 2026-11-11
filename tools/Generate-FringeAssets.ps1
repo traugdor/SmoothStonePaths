@@ -1,6 +1,5 @@
-# Regenerates the fringe cutout masks, fringe shapes and the blocktype patch under
-# SmoothStonePaths/assets/smoothstonepaths. Run after changing the mask profiles or
-# the lists of vanilla rocks and soil fertilities.
+# Regenerates the fringe cutout masks and fringe shapes under
+# SmoothStonePaths/assets/smoothstonepaths. Run after changing the mask profiles.
 #
 # The masks are 32x32 PNGs used with the engine's OverlayCutout blend mode: pixels with
 # alpha > 0 are REMOVED from the base texture, so the fringe is the vanilla texture with
@@ -27,8 +26,6 @@
 Add-Type -AssemblyName System.Drawing
 
 $assets = Join-Path $PSScriptRoot '..\SmoothStonePaths\assets\smoothstonepaths'
-$rocks = 'andesite', 'basalt', 'bauxite', 'chalk', 'chert', 'claystone', 'conglomerate', 'granite', 'limestone', 'peridotite', 'phyllite', 'sandstone', 'shale', 'slate'
-$fertilities = 'verylow', 'low', 'medium', 'compost', 'high'
 
 $ShortRows = 6
 $LongRows = 14
@@ -118,97 +115,6 @@ $($faceLines -join ",`n")
     [IO.File]::WriteAllText($path, $json.Replace("`r`n", "`n") + "`n")
 }
 
-function Write-Patch {
-    # Base textures need an explicit domain: a patch resolves a domain-less path in the patched block's own
-    # domain, so on another mod's block 'block/...' would point into that mod's assets instead of the game's.
-    $textureCodes = [ordered]@{ 'fringe-grass' = 'game:block/plant/grasscoverage/normal-top' }
-    foreach ($rock in $rocks) { $textureCodes["fringe-sand-$rock"] = "game:block/stone/sand/$rock" }
-    foreach ($rock in $rocks) { $textureCodes["fringe-gravel-$rock"] = "game:block/stone/gravel/$rock" }
-    foreach ($fertility in $fertilities) { $textureCodes["fringe-soil-$fertility"] = "game:block/soil/fert$fertility" }
-
-    $texture = { param($code, $base, $mask) "        `"$code`": { `"base`": `"$base`", `"blendedOverlays`": [ { `"base`": `"smoothstonepaths:block/fringe/$mask`", `"blendMode`": `"OverlayCutout`" } ] }" }
-    $textureLines = foreach ($code in $textureCodes.Keys) {
-        & $texture $code $textureCodes[$code] 'cutout'
-        & $texture "$code-concave" $textureCodes[$code] 'cutout-concave'
-    }
-    $textures = $textureLines -join ",`n"
-
-    # Full-height paths only: slabs sit half a block below the ground beside them, so they get no fringe.
-    # Paths from other mods are patched only when that mod is installed. Natural sand and gravel are patched only
-    # when TerrainBlending is on in the mod config (SmoothStonePathsModSystem copies it into the world config).
-    $terrainKey = 'smoothStonePathsTerrainBlending'
-    $targets = @(
-        @{ File = 'game:blocktypes/stone/generic/stonepath.json'; Class = 'BlockBlendedPath' },
-        @{ File = 'addsomepaths:blocktypes/gravelpath.json'; Class = 'BlockBlendedPath'; ModId = 'addsomepaths' },
-        @{ File = 'addsomepaths:blocktypes/packedpath.json'; Class = 'BlockBlendedPath'; ModId = 'addsomepaths' },
-        # More Roads and Paths: its full-height stone paths, stone roads and clay roads share the vanilla path shape. Its
-        # slabs and stairs are left alone, and so are the temporal roads, which glow and carry their own overlay.
-        @{ File = 'moreroads:blocktypes/paths/stonepath.json'; Class = 'BlockBlendedPath'; ModId = 'moreroads' },
-        @{ File = 'moreroads:blocktypes/roads/stone/ancientroad.json'; Class = 'BlockBlendedPath'; ModId = 'moreroads' },
-        @{ File = 'moreroads:blocktypes/roads/clay/clayroad.json'; Class = 'BlockBlendedPath'; ModId = 'moreroads' },
-        @{ File = 'game:blocktypes/stone/sand.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey },
-        @{ File = 'game:blocktypes/stone/gravel.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey },
-        # Bare soil is drawn as a cube, which no block hook can reach, so it is switched to a shape drawn the same way.
-        # The soil class is shared by every fertility and grass coverage; BlockBlendedSoil only fringes the bare ones.
-        @{ File = 'game:blocktypes/soil/soil.json'; Class = 'BlockBlendedSoil'; Condition = $terrainKey; Extra = @(@{ Path = '/drawtypeByType/*-none'; Value = 'Json' }) },
-        @{ File = 'game:blocktypes/soil/bony.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey; Extra = @(@{ Path = '/drawtype'; Value = 'Json' }) },
-        # Built soil blocks are cube-drawn too. Rammed earth picks its textures per variant, so it is baked only.
-        @{ File = 'game:blocktypes/soil/packeddirt.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey; Extra = @(@{ Path = '/drawtype'; Value = 'Json' }) },
-        @{ File = 'game:blocktypes/soil/drypackeddirt.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey; Extra = @(@{ Path = '/drawtype'; Value = 'Json' }) },
-        @{ File = 'game:blocktypes/soil/packeddirt-trampledearth.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey; Extra = @(@{ Path = '/drawtype'; Value = 'Json' }) },
-        @{ File = 'game:blocktypes/soil/rammed.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey; NoTextures = $true; Extra = @(@{ Path = '/drawtype'; Value = 'Json' }) },
-        # Wavy sand picks a tile of its texture per position, which the shape tessellator does as well.
-        @{ File = 'game:blocktypes/stone/sand-wavy.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey; Extra = @(@{ Path = '/drawtype'; Value = 'Json' }) },
-        # Rock is mostly buried, and a block under another one is skipped before any fringe work is done.
-        @{ File = 'game:blocktypes/stone/rock.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey; NoTextures = $true; Extra = @(@{ Path = '/drawtype'; Value = 'Json' }) },
-        # Already a shape; its textures are chosen per variant, so only the baked path is available there.
-        @{ File = 'game:blocktypes/devastation/soil.json'; Class = 'BlockBlendedTerrain'; Condition = $terrainKey; NoTextures = $true }
-    )
-    $entries = foreach ($target in $targets) {
-        $file = $target.File
-        $class = $target.Class
-        $dependsOn = if ($target.ModId) { "`n    `"dependsOn`": [ { `"modid`": `"$($target.ModId)`" } ]," } else { '' }
-        if ($target.Condition) { $dependsOn += "`n    `"condition`": { `"when`": `"$($target.Condition)`", `"isValue`": `"true`" }," }
-        $extra = foreach ($op in $target.Extra) {
-@"
-,
-  {
-    "op": "add",
-    "path": "$($op.Path)",
-    "value": "$($op.Value)",
-    "file": "$file",$dependsOn
-    "side": "Server"
-  }
-"@
-        }
-        $texturePatch = if ($target.NoTextures) { '' } else {
-@"
-,
-  {
-    "op": "addmerge",
-    "path": "/textures",
-    "value": {
-$textures
-    },
-    "file": "$file",$dependsOn
-    "side": "Server"
-  }
-"@
-        }
-@"
-  {
-    "op": "add",
-    "path": "/class",
-    "value": "$class",
-    "file": "$file",$dependsOn
-    "side": "Server"
-  }$texturePatch$($extra -join '')
-"@
-    }
-    $json = "[`n" + ($entries -join ",`n") + "`n]`n"
-    [IO.File]::WriteAllText((Join-Path $assets 'patches\stonepath.json'), $json.Replace("`r`n", "`n"))
-}
-
 $maskDir = Join-Path $assets 'textures\block\fringe'
 Get-ChildItem $maskDir -Filter *.png | Remove-Item
 foreach ($mask in @{ 'cutout.png' = (New-Mask); 'cutout-concave.png' = (New-ConcaveMask) }.GetEnumerator()) {
@@ -226,5 +132,4 @@ Write-Shape 'inner' @(14, 0) @(16, 2) @(12, 13, 14, 15) 15.03125 1
 # The baked path draws all the grass as one overlay quad covering the whole block top.
 Write-Shape 'overlay' @(0, 0) @(16, 16) @(0, 0, 16, 16) 15.03125 1
 
-Write-Patch
-Write-Host 'Generated 2 masks, 7 shapes and patch.'
+Write-Host 'Generated 2 masks and 7 shapes.'

@@ -30,10 +30,6 @@ internal sealed class FringeRenderer
         }
     }
 
-    // The fallback path draws every piece as its own quad. Quads are depth-written in the Decor pass and overlap,
-    // so each sits on its own height layer (see FringePlan.Layer) or they would z-fight.
-    private const float LayerStep = 1f / 256f;
-
     private readonly Block block;
     private readonly float surfaceLift;
     private readonly System.Func<int, bool> acceptsFilter;
@@ -43,8 +39,10 @@ internal sealed class FringeRenderer
     private FringeBaker baker;
     private int generation;
     private readonly object cacheLock = new object();
-    private readonly Dictionary<Piece, MeshData> pieces = new Dictionary<Piece, MeshData>();
-    private readonly Dictionary<(MeshData baseMesh, long key, int variation), MeshData> composites = new Dictionary<(MeshData, long, int), MeshData>();
+    private readonly Dictionary<(MeshData baseMesh, long key, int variation, (int, int, int) tilePosition), MeshData> composites =
+        new Dictionary<(MeshData, long, int, (int, int, int)), MeshData>();
+    private TileRemapper tiles;
+    private bool tilesResolved;
 
     public FringeRenderer(Block block, float surfaceLift, System.Func<int, bool> accepts, System.Func<Block[], int, bool> shows)
     {
@@ -67,11 +65,9 @@ internal sealed class FringeRenderer
     public void Tesselate(ref MeshData sourceMesh, BlockPos pos, Block[] chunkExtBlocks, int extIndex3d)
     {
         if (capi == null) return;
-        if (!showsFringe(chunkExtBlocks, extIndex3d)) return;
 
-        long key = ComputeKey(chunkExtBlocks, extIndex3d, acceptsFilter);
-        if (key == 0) return;
-        int variation = pos == null ? 0 : FringePlan.ChooseVariation(key, pos.X, pos.Y, pos.Z);
+        long key = showsFringe(chunkExtBlocks, extIndex3d) ? ComputeKey(chunkExtBlocks, extIndex3d, acceptsFilter) : 0;
+        int variation = key == 0 || pos == null ? 0 : FringePlan.ChooseVariation(key, pos.X, pos.Y, pos.Z);
 
         lock (cacheLock)
         {
@@ -80,14 +76,30 @@ internal sealed class FringeRenderer
             {
                 generation = sources.Generation;
                 composites.Clear();
-                pieces.Clear();
                 baker = null;
+                tilesResolved = false;
+            }
+            if (!tilesResolved)
+            {
+                tiles = TileRemapper.For(block, capi.BlockTextureAtlas.Positions);
+                tilesResolved = true;
             }
 
-            var cacheKey = (sourceMesh, key, variation);
+            // A block with connected textures needs its tiles put back even where it shows no fringe.
+            bool tiled = tiles != null && pos != null;
+            if (key == 0 && !tiled) return;
+
+            var tilePosition = tiled ? tiles.PositionKey(pos.X, pos.Y, pos.Z) : default;
+            var cacheKey = (sourceMesh, key, variation, tilePosition);
             if (!composites.TryGetValue(cacheKey, out MeshData composite))
             {
-                composite = Compose(sourceMesh, key, variation);
+                MeshData baseMesh = sourceMesh;
+                if (tiled)
+                {
+                    baseMesh = sourceMesh.Clone();
+                    tiles.Apply(baseMesh, pos.X, pos.Y, pos.Z);
+                }
+                composite = key == 0 ? baseMesh : Compose(baseMesh, key, variation);
                 composites[cacheKey] = composite;
             }
             sourceMesh = composite;
@@ -136,11 +148,11 @@ internal sealed class FringeRenderer
     private MeshData Compose(MeshData baseMesh, long key, int variation)
     {
         List<Piece> planned = FringePlan.Build(key, variation);
-        MeshData baked = TryBake(baseMesh, planned);
-        return baked ?? ComposeStacked(baseMesh, planned);
+        // A block that cannot be baked keeps its own mesh and shows no fringe; TryBake has said why, once.
+        return TryBake(baseMesh, planned) ?? baseMesh;
     }
 
-    // Preferred: the fringe is baked into the block's own top texture, so nothing floats above the surface.
+    // The fringe is baked into the block's own top texture, so nothing floats above the surface.
     private MeshData TryBake(MeshData baseMesh, List<Piece> planned)
     {
         if (planned.Count == 0) return null;
@@ -161,7 +173,7 @@ internal sealed class FringeRenderer
             failure = e.GetType().Name + ": " + e.Message;
         }
 
-        Report("fallback-" + block.Code.FirstCodePart() + "-" + failure, "Falling back to stacked fringe quads on " + block.Code + ": " + failure + ".", true);
+        Report("unbaked-" + block.Code.FirstCodePart() + "-" + failure, "No fringe on " + block.Code + ": " + failure + ".", true);
         return null;
     }
 
@@ -173,58 +185,6 @@ internal sealed class FringeRenderer
         }
         if (warning) capi.Logger.Warning("[smoothstonepaths] " + message);
         else capi.Logger.Notification("[smoothstonepaths] " + message);
-    }
-
-    // Fallback: every piece is its own quad, lifted onto its own layer above the surface.
-    private MeshData ComposeStacked(MeshData baseMesh, List<Piece> planned)
-    {
-        MeshData result = null;
-        foreach (Piece piece in planned)
-        {
-            MeshData mesh = GetPiece(piece);
-            if (mesh == null) continue;
-            result ??= baseMesh.Clone();
-            result.AddMeshData(mesh);
-        }
-        return result ?? baseMesh;
-    }
-
-    private MeshData GetPiece(Piece piece)
-    {
-        if (pieces.TryGetValue(piece, out MeshData cached)) return cached;
-
-        MeshData mesh = null;
-        string textureCode = FringeMaterials.TextureCodes[piece.Material];
-        if (piece.Kind == PieceKind.EdgeConcave) textureCode += FringeMaterials.ConcaveSuffix;
-        TextureAtlasPosition texture = capi.BlockTextureAtlas.GetPosition(block, textureCode, true);
-        var location = new AssetLocation("smoothstonepaths", "shapes/block/fringe/" + ShapeName(piece) + ".json");
-        // "Shape" alone would bind to Block.Shape (a CompositeShape), so the type is fully qualified.
-        Vintagestory.API.Common.Shape shape = Vintagestory.API.Common.Shape.TryGet(capi, location);
-        if (texture == null)
-        {
-            capi.Logger.Warning("[smoothstonepaths] Fringe texture {0} missing on {1}", textureCode, block.Code);
-        }
-        else if (shape == null)
-        {
-            capi.Logger.Warning("[smoothstonepaths] Fringe shape {0} not found", location);
-        }
-        else
-        {
-            if (FringeMaterials.IsTinted(piece.Material))
-            {
-                shape = shape.Clone();
-                foreach (ShapeElement element in shape.Elements)
-                {
-                    element.ClimateColorMap = "climatePlantTint";
-                    element.SeasonColorMap = "seasonalGrass";
-                }
-            }
-            capi.Tesselator.TesselateShape("smoothstonepaths", shape, out mesh, new FringeTextureSource(capi, texture), new Vec3f(0f, FringePlan.RotationY[piece.Index], 0f));
-            mesh.Translate(0f, surfaceLift + FringePlan.Layer(piece) * LayerStep, 0f);
-        }
-
-        pieces[piece] = mesh;
-        return mesh;
     }
 
     // The inside-block renderer calls this hook with a sparsely filled array, so nulls and bad indices are possible.

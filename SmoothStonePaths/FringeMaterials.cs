@@ -1,11 +1,10 @@
-using System;
 using Vintagestory.API.Common;
 
 namespace SmoothStonePaths;
 
 /// <summary>
-/// Maps neighbouring blocks to fringe material ids. Id 0 means no fringe; every other id indexes
-/// <see cref="TextureCodes"/>, the texture codes the blocktype patch adds to the path blocks.
+/// Maps neighbouring blocks to fringe material ids. Id 0 means no fringe and 1 is grass; every other id is a source
+/// texture handed out by <see cref="FringeSourceRegistry"/>. Only blocks the server marked as sources give a fringe.
 /// </summary>
 internal static class FringeMaterials
 {
@@ -13,114 +12,45 @@ internal static class FringeMaterials
     public const int Grass = 1;
 
     /// <summary>Bits needed to store one material id in a neighbour key.</summary>
-    public const int Bits = 6;
+    public const int Bits = 8;
 
-    /// <summary>Appended to a texture code to get the variant masked with cutout-concave.png.</summary>
-    public const string ConcaveSuffix = "-concave";
+    /// <summary>The texture the grass fringe is cut from, tinted live like the grass around it.</summary>
+    public const string GrassTexture = "game:block/plant/grasscoverage/normal-top";
 
-    private static readonly string[] Rocks =
-    {
-        "andesite", "basalt", "bauxite", "chalk", "chert", "claystone", "conglomerate",
-        "granite", "limestone", "peridotite", "phyllite", "sandstone", "shale", "slate"
-    };
-
-    private static readonly string[] Fertilities = { "verylow", "low", "medium", "compost", "high" };
-
-    private static readonly int FallbackRock = Array.IndexOf(Rocks, "granite");
-    private static readonly int FallbackFertility = Array.IndexOf(Fertilities, "medium");
-
-    private static readonly int SandBase = Grass + 1;
-    private static readonly int GravelBase = SandBase + Rocks.Length;
-    private static readonly int SoilBase = GravelBase + Rocks.Length;
-
-    public static readonly string[] TextureCodes = BuildTextureCodes();
-
-    public static bool IsSand(int material) => material >= SandBase && material < GravelBase;
+    /// <summary>The client's registry and the function that resolves a source block to its id; set by <see cref="FringeAssetSources"/>.</summary>
+    internal static FringeSourceRegistry Registry;
+    internal static System.Func<Block, int> ResolveSource;
 
     /// <summary>
     /// Whether a terrain fringe flows from a neighbour with this material id onto a natural terrain block. Each
-    /// boundary flows one way only, so two blocks never fringe onto each other: grass onto sand, gravel and bare soil, sand onto gravel.
+    /// boundary flows one way only, so two blocks never fringe onto each other: grass onto sand, gravel and soil,
+    /// sand onto gravel.
     /// </summary>
-    public static bool FlowsOnto(int material, EnumBlockMaterial receiver)
-    {
-        switch (receiver)
-        {
-            case EnumBlockMaterial.Soil: return material == Grass;
-            case EnumBlockMaterial.Sand: return material == Grass;
-            case EnumBlockMaterial.Gravel: return material == Grass || IsSand(material);
-            default: return false;
-        }
-    }
+    public static bool FlowsOnto(int material, EnumBlockMaterial receiver) => FlowsOnto(material, receiver, Registry);
 
-    /// <summary>Only the grass fringe is tinted with the climate and season colour maps.</summary>
-    public static bool IsTinted(int material) => material == Grass;
+    internal static bool FlowsOnto(int material, EnumBlockMaterial receiver, FringeSourceRegistry registry)
+    {
+        if (material == Grass) return receiver == EnumBlockMaterial.Sand || receiver == EnumBlockMaterial.Gravel || receiver == EnumBlockMaterial.Soil;
+        if (material == None || registry == null) return false;
+        return receiver == EnumBlockMaterial.Gravel && registry.Category(material) == SourceCategory.Sand;
+    }
 
     public static int Classify(Block neighbour)
     {
         if (neighbour == null || neighbour.Id == 0) return None;
-        if (neighbour is BlockBlendedPath) return None;
-        if (neighbour.Code != null && IsPath(neighbour.Code.Path)) return None;
-
-        switch (neighbour.BlockMaterial)
-        {
-            case EnumBlockMaterial.Soil:
-                // Many blocks share the Soil material (packed dirt, rammed earth, cob, mud bricks, peat, clay, farmland, ...).
-                // They are built surfaces that behave like stone, so only natural soil is blended.
-                if (neighbour.Code?.FirstCodePart() != "soil") return None;
-                if (neighbour.Variant.TryGetValue("grasscoverage", out string coverage) && coverage != "none") return Grass;
-                return SoilBase + VariantIndex(neighbour, "fertility", Fertilities, FallbackFertility);
-            case EnumBlockMaterial.Sand:
-                return SandBase + VariantIndex(neighbour, "rock", Rocks, FallbackRock);
-            case EnumBlockMaterial.Gravel:
-                return GravelBase + VariantIndex(neighbour, "rock", Rocks, FallbackRock);
-            default:
-                return None;
-        }
+        if (neighbour.Attributes?[BlocktypeRewriter.SourceAttribute].AsBool(false) != true) return None;
+        if (neighbour.Variant != null && neighbour.Variant.TryGetValue("grasscoverage", out string coverage) && coverage != "none") return Grass;
+        return ResolveSource?.Invoke(neighbour) ?? None;
     }
 
-    // Path blocks never fringe each other, including ones this mod does not patch (slabs, stairs, full blocks):
-    // vanilla stone paths, Add Some Paths' gravel and packed dirt paths and More Roads and Paths' roads.
-    private static readonly string[] PathCodePrefixes = { "stonepath", "gravelpath", "packedpath", "ancientroad", "clayroad", "stoneroad" };
-
-    private static bool IsPath(string codePath)
+    /// <summary>Which flow rules a source block's own texture follows, from its block material.</summary>
+    public static SourceCategory CategoryOf(EnumBlockMaterial material)
     {
-        foreach (string prefix in PathCodePrefixes)
+        switch (material)
         {
-            if (codePath.StartsWith(prefix)) return true;
+            case EnumBlockMaterial.Sand: return SourceCategory.Sand;
+            case EnumBlockMaterial.Gravel: return SourceCategory.Gravel;
+            default: return SourceCategory.Soil;
         }
-        return false;
-    }
-
-    private static int VariantIndex(Block block, string variantKey, string[] values, int fallback)
-    {
-        if (!block.Variant.TryGetValue(variantKey, out string value)) return fallback;
-        int index = Array.IndexOf(values, value);
-        return index >= 0 ? index : fallback;
-    }
-
-    /// <summary>The vanilla texture a fringe material is cut from, without the textures/ prefix or the .png ending, e.g. game:block/stone/sand/granite.</summary>
-    public static string TexturePath(int material)
-    {
-        if (material == Grass) return "game:block/plant/grasscoverage/normal-top";
-        if (material >= SoilBase) return "game:block/soil/fert" + Fertilities[material - SoilBase];
-        if (material >= GravelBase) return "game:block/stone/gravel/" + Rocks[material - GravelBase];
-        return "game:block/stone/sand/" + Rocks[material - SandBase];
-    }
-
-    private static string[] BuildTextureCodes()
-    {
-        var codes = new string[SoilBase + Fertilities.Length];
-        codes[None] = "";
-        codes[Grass] = "fringe-grass";
-        for (int i = 0; i < Rocks.Length; i++)
-        {
-            codes[SandBase + i] = "fringe-sand-" + Rocks[i];
-            codes[GravelBase + i] = "fringe-gravel-" + Rocks[i];
-        }
-        for (int i = 0; i < Fertilities.Length; i++)
-        {
-            codes[SoilBase + i] = "fringe-soil-" + Fertilities[i];
-        }
-        return codes;
     }
 }

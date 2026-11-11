@@ -19,12 +19,15 @@ Vanilla stone paths end in a hard, straight edge against the ground beside them.
 The edge is drawn from what is actually next to each path block:
 
 - **Grass** spreads onto the path in the same tint as the grass around it, following the local climate and season.
-- **Sand and gravel** use the texture of their own rock type, so granite sand looks like granite sand.
-- **Dirt** uses the texture of its own fertility.
+- **Sand, gravel and dirt** use the top texture of the block actually beside the path, so granite sand looks like granite sand and each soil fertility looks like itself.
+- **Forest floor, cob, packed dirt, arid packed dirt and farmland** creep onto paths too. Grassy cob gives a grass edge, and forest floor gives its soil without the grass on it.
 - **Corners and seams** blend: where two different materials meet, the edge mixes them instead of switching abruptly.
 - **Variation**: about one path block in four has one side where the overgrowth reaches further, and the edge speckle varies from block to block, so long paths don't look stamped.
 
-Built surfaces such as packed dirt, rammed earth, cob and mud bricks are treated like stone and get no edge. Neither does ground that is covered by another block, such as dirt under a slab or stairs.
+- **Path slabs** get sand, gravel and dirt edges, as if they had spilled down onto them. Grass does not grow onto slabs.
+- **Cobblestone** (plain and fanned) gets every edge, grass included, where it lies flush with the ground. Cobble skulls are left out on purpose, so the edge never trims their skull pattern; add `game:cobbleskull` to `IncludePaths` if you want them too.
+
+Rammed earth, mud bricks, peat and clay are treated like stone and give no edge. Neither does ground that is covered by another block, such as dirt under a slab or stairs.
 
 It works on paths you have already placed. It adds no new blocks and saves nothing to your world, so you can remove it at any time.
 
@@ -42,7 +45,13 @@ The mod creates `ModConfig/smoothstonepaths.json` in your `VintagestoryData` fol
 
 ```json
 {
-  "TerrainBlending": false
+  "TerrainBlending": false,
+  "IncludePaths": [ "game:cobblestone", "game:cobblestonefan" ],
+  "IncludeSlabs": [],
+  "IncludeTerrain": [ "game:rock", "game:devastatedsoil" ],
+  "Exclude": [ "moreroads:stoneroad3", "game:stonepathfullblock", "game:strawbedding", "game:mudbrick", "game:creativegrass", "game:dirtygravel", "game:muddygravel", "game:sludgygravel", "game:regolith", "game:cob" ],
+  "ExtraSources": [ "game:soil", "game:forestfloor", "game:cob", "game:packeddirt", "game:drypackeddirt", "game:farmland" ],
+  "ExcludeSources": []
 }
 ```
 
@@ -52,15 +61,23 @@ The mod creates `ModConfig/smoothstonepaths.json` in your `VintagestoryData` fol
   - Soil that already has grass on it is left alone.
   - Turning it on changes how these blocks are drawn, so exposed rock in particular can make chunks a little slower to build.
 
-On a server, the server's setting applies to every player. Restart the game or server after changing it.
+The other entries pick blocks by `domain:code`, where code is the block's code without its variants, such as `game:cobblestone` or `moreroads:clayroad`. `*` matches anything, and an entry without a domain means `game`.
+
+- **IncludePaths**: blocks that get every edge, like a path. Paths are also found on their own by their height (15/16 of a block).
+- **IncludeSlabs**: slabs that get sand, gravel and dirt edges. The slabs of every path are found on their own.
+- **IncludeTerrain**: blocks that grass grows onto when TerrainBlending is on, besides full blocks of sand, gravel and soil.
+- **Exclude**: blocks that never get an edge.
+- **ExtraSources**: blocks whose top creeps onto their neighbours, besides every block of sand and gravel.
+- **ExcludeSources**: blocks whose top never creeps onto their neighbours.
+
+On a server, the server's settings apply to every player. Restart the game or server after changing them.
 
 ## Compatibility
 
-- Affects full-height stone paths. Stone path slabs, stairs and full-block stone paths are left as they are.
-- Works with [Add Some Paths](https://mods.vintagestory.at/addsomepaths): its gravel paths and packed dirt paths get the same blended edges. Their slabs are left as they are. Nothing changes if you don't have that mod installed.
-- Works with [More Roads and Paths](https://mods.vintagestory.at/moreroads): its full-height stone paths, ancient (stone) roads and clay roads get the same blended edges. Its slabs, stairs, foot paths and temporal roads are left as they are. Nothing changes if you don't have that mod installed.
+- Other mods' paths are found on their own: any block 15/16 of a block high is treated as a path, and its slab as a path slab. This covers [Add Some Paths](https://mods.vintagestory.at/addsomepaths) and [More Roads and Paths](https://mods.vintagestory.at/moreroads) without anything mod-specific. More Roads' temporal roads are excluded by default.
+- Stairs and full-block stone paths are left as they are.
+- Blocks that come with their own code (another mod's custom block class) never get an edge, so their behaviour stays intact. They can still creep onto paths: add them to `ExtraSources`. Use `Exclude` and `ExcludeSources` for any block that is picked up when it should not be.
 - Paths never blend into each other: a stone path next to a gravel path keeps a clean edge.
-- Mods that replace or patch the vanilla stone path files may conflict with it, or keep their own paths from getting the blended edge.
 
 ## Known limitations
 
@@ -82,4 +99,6 @@ To debug:
 
 The packaged mod is written to `Releases/smoothstonepaths_<version>.zip` when you run the CakeBuild project. CakeBuild uses Cake (C# Make), a cross-platform build automation tool whose build scripts are written in C#.
 
-The edge masks, shapes and the blocktype patch are generated by `tools/Generate-FringeAssets.ps1` (Windows PowerShell). Run it after changing the mask settings or the lists of rocks and soil fertilities, then rebuild.
+The edge masks and shapes are generated by `tools/Generate-FringeAssets.ps1` (Windows PowerShell). Run it after changing the mask settings, then rebuild.
+
+The tests are in `tests/SmoothStonePaths.Tests` and run with `dotnet test tests/SmoothStonePaths.Tests`. Some of them read the game's own blocktypes through `VINTAGE_STORY`.

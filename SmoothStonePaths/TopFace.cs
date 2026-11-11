@@ -40,13 +40,13 @@ internal static class TopFace
     /// <summary>The texture coordinates of a face's four vertices as fractions of its texture, plus the rectangle they span.</summary>
     internal readonly record struct Mapping(float U00, float V00, float U10, float V10, float U01, float V01)
     {
-        /// <summary>The texel of a 32x32 texture that shows at this point of the block top, x and z in 0..1.</summary>
-        public void TexelAt(float x, float z, out int tx, out int ty)
+        /// <summary>The texel of a size x size texture that shows at this point of the block top, x and z in 0..1.</summary>
+        public void TexelAt(float x, float z, int size, out int tx, out int ty)
         {
             float u = U00 + x * (U10 - U00) + z * (U01 - U00);
             float v = V00 + x * (V10 - V00) + z * (V01 - V00);
-            tx = Math.Clamp((int)Math.Floor(u * 32f), 0, 31);
-            ty = Math.Clamp((int)Math.Floor(v * 32f), 0, 31);
+            tx = Math.Clamp((int)Math.Floor(u * size), 0, size - 1);
+            ty = Math.Clamp((int)Math.Floor(v * size), 0, size - 1);
         }
     }
 
@@ -77,16 +77,16 @@ internal static class TopFace
         return true;
     }
 
-    /// <summary>Re-samples a 32x32 texture into block space through a face's mapping.</summary>
-    public static int[] Orient(int[] texture, Mapping mapping)
+    /// <summary>Re-samples a size x size texture into block space through a face's mapping, keeping its size.</summary>
+    public static int[] Orient(int[] texture, int size, Mapping mapping)
     {
-        int[] oriented = new int[32 * 32];
-        for (int tz = 0; tz < 32; tz++)
+        int[] oriented = new int[size * size];
+        for (int tz = 0; tz < size; tz++)
         {
-            for (int tx = 0; tx < 32; tx++)
+            for (int tx = 0; tx < size; tx++)
             {
-                mapping.TexelAt((tx + 0.5f) / 32f, (tz + 0.5f) / 32f, out int sx, out int sy);
-                oriented[tz * 32 + tx] = texture[sy * 32 + sx];
+                mapping.TexelAt((tx + 0.5f) / size, (tz + 0.5f) / size, size, out int sx, out int sy);
+                oriented[tz * size + tx] = texture[sy * size + sx];
             }
         }
         return oriented;

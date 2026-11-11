@@ -15,11 +15,11 @@ namespace SmoothStonePaths;
 /// </remarks>
 internal static class OverlayQuad
 {
-    /// <summary>Texels of margin around the overlay image, on every side.</summary>
-    public const int MarginTexels = 2;
+    /// <summary>How far the overlay reaches past a side that has grass beside it, in block pixels.</summary>
+    public const float MarginPixels = 1f;
 
-    /// <summary>How far the overlay reaches past a side that has grass beside it, in block pixels (a texel is half a pixel).</summary>
-    public const float MarginPixels = MarginTexels / 2f;
+    /// <summary>Texels of margin around an overlay image of this size, on every side: one block pixel's worth.</summary>
+    public static int MarginTexels(int size) => size / 16;
 
     /// <summary>Width of the whole overlay image in block pixels: the block top plus a margin on both sides.</summary>
     public const float ImagePixels = 16f + 2f * MarginPixels;
